@@ -1,0 +1,70 @@
+---
+name: gitlab-mr-cli-shell
+description: >-
+  Use the repo-local gitlab-mr Typer CLI for GitLab MR discussions (JSON), threaded replies (discussion_id), and MR creation.
+  Triggers: gitlab-mr, MR review threads, shell GitLab API, PRIVATE-TOKEN. Env GITLAB_TOKEN (exact name) and optional GITLAB_URL.
+---
+
+# gitlab-mr CLI (shell skill)
+
+Thin JSON-first wrapper around GitLab REST **`/merge_requests` + `/discussions`** for agents and scripts. Prefer Cursor **GitLab MCP** when the repo already exposes it; use this CLI when you only have a shell and **`GITLAB_TOKEN`**.
+
+## Install and PATH
+
+From the **checked-out** `gitlab_plugin` repo root (use your real path, e.g. `~/misc/gitlab_plugin`, not another machine’s `$HOME`):
+
+```bash
+python3 -m venv .venv
+source .venv/bin/activate
+pip install -e .
+```
+
+Until you add the venv **`bin`** to `PATH`, **`gitlab-mr: command not found`** is expected—in that case invoke **`.venv/bin/gitlab-mr`** from the repo root, or install with **pipx** so `gitlab-mr` lands on `PATH`.
+
+On PEP 668–managed system Python, always install inside a venv.
+
+## Environment
+
+| Variable | Purpose |
+|----------|---------|
+| **`GITLAB_TOKEN`** | Personal access token. This CLI reads **only** this name (not `GITLAB_PRIVATE_TOKEN` unless you `export GITLAB_TOKEN=…` yourself). Scopes: at least **`read_api`** for `discussions`; **`api`** for `reply` and `create`. |
+| **`GITLAB_URL`** | Base URL for self-managed GitLab. Omit on **gitlab.com**. Wrong host ⇒ `401`/wrong project. |
+
+Requests use GitLab’s **`PRIVATE-TOKEN`** HTTP header—if **`curl`** with `$GITLAB_TOKEN` returns **200** but **`gitlab-mr`** returns **401**, upgrade/reinstall so you have the current client version; old builds sent the wrong header name.
+
+Never print tokens in transcripts or commits.
+
+## Help and version
+
+Every command accepts **`--help`** and **`-h`**. Root **`--version` / `-V`** prints the package version.
+
+Examples:
+
+```text
+gitlab-mr -h
+gitlab-mr discussions -h
+gitlab-mr create --help
+gitlab-mr -V
+```
+
+## Typical workflow
+
+1. **`discussions`** (alias **`review-comments`**) — list threaded review payloads:
+
+   ```text
+   gitlab-mr discussions "https://gitlab.com/ns/repo/-/merge_requests/12"
+   gitlab-mr discussions 12 -p ns/repo
+   ```
+
+2. **`discussion_id`** — take from JSON; each thread has `notes[]` with bodies and authors.
+
+3. **`reply`** — post inside that thread (`--discussion-id`, body via **`--body`**, **`--body-file`**, or stdin).
+
+4. **`create`** — open an MR (**`--source-branch`**, **`--target-branch`**, **`--title`**, plus description via **`--description`**, **`--description-file`**, or piped stdin).
+
+**`--dry-run`** on `discussions` / `reply` / `create` prints resolved routing **without HTTP** (token presence only as a boolean hint; GitLab is not contacted).
+
+## When to prefer MCP instead
+
+Repos with **`gitlab_mr_*`** MCP tools cover broader ALM flows (pipelines, search, approvals orchestration). This Skill is for **minimal shell automation** or environments without MCP.
+
