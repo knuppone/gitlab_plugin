@@ -1,13 +1,13 @@
 # gitlab-mr-cli
 
-JSON-first CLI around the GitLab Merge Request REST API (`discussions` + threaded `reply`) and opening new MRs, meant for scripted and agent-driven review workflows.
+JSON-first CLI around the GitLab Merge Request REST API (`discussions`, top-level `comment`/`note`, threaded `reply`) and opening new MRs, meant for scripted and agent-driven review workflows.
 
-Documentation: [Merge requests API](https://docs.gitlab.com/ee/api/merge_requests.html), [Discussions API](https://docs.gitlab.com/ee/api/discussions.html).
+Documentation: [Merge requests API](https://docs.gitlab.com/ee/api/merge_requests.html), [Discussions API](https://docs.gitlab.com/ee/api/discussions.html), [Notes API](https://docs.gitlab.com/ee/api/notes.html).
 
 ## Setup
 
 - Python 3.10+
-- PAT in **`GITLAB_TOKEN`** ([scopes](https://docs.gitlab.com/ee/user/profile/personal_access_tokens.html): **`read_api`** for read-only; **`api`** for replies and MR creation)
+- PAT in **`GITLAB_TOKEN`** ([scopes](https://docs.gitlab.com/ee/user/profile/personal_access_tokens.html): **`read_api`** for read-only; **`api`** for comments, replies, and MR creation)
 - Optional **`GITLAB_URL`** for self-managed installs (omit for https://gitlab.com)
 
 ```bash
@@ -36,9 +36,20 @@ gitlab-mr review-comments 12 --project acme/widget --max-pages 3 --compact
 
 `--dry-run` prints resolved routing metadata without contacting GitLab (token not required).
 
+### Add a top-level MR comment (`comment` / `note`)
+
+Posts to the merge request **notes** endpoint (summary comment on the MR, not inside a review thread). Same body options as `reply` (`--body`, `--body-file`, stdin).
+
+```bash
+gitlab-mr comment "https://gitlab.com/acme/widget/-/merge_requests/12" \
+  --body "Reviewed end-to-end; ready to merge after CI."
+
+printf "LGTM from agent." | gitlab-mr note 12 --project acme/widget
+```
+
 ### Reply in a discussion thread
 
-Use `discussion_id` from JSON above.
+Use `discussion_id` from JSON above (inline / threaded review feedback).
 
 ```bash
 # After saving discussions output to mr.json:
@@ -63,5 +74,5 @@ cat descr.md | gitlab-mr create --project acme/widget \
 1. **`show`** MR metadata — state, pipelines, approvals at a glance.
 2. **`diff`** / **`changes`** export — grounding models on code beside comments.
 3. **`pipelines`** + **`job-trace`** — shorten CI-fix loops.
-4. **`resolve-discussion`** / **`note`** — mark threads addressed or drop summary notes off-thread.
+4. **`resolve-discussion`** — mark review threads addressed programmatically.
 5. **`--dry-run` improvements** — redacted HTTP preview consistently across commands.

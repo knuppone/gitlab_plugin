@@ -63,6 +63,32 @@ def test_reply_posts_json_document() -> None:
         cli.close()
 
 
+def test_create_mr_note_posts_to_merge_request_notes_endpoint() -> None:
+    recorder: dict[str, str] = dict()
+
+    def responder(request: httpx.Request) -> httpx.Response:
+        recorder.update(
+            dict(
+                method=request.method,
+                path=request.url.path,
+                body=request.content.decode("utf-8"),
+            )
+        )
+        return httpx.Response(201, json=dict(id=55, body="summary"))
+
+    transport = httpx.MockTransport(responder)
+    cli = GitLabMrClient(base_url="https://gitlab.invalid", token="token", timeout_seconds=6.0, transport=transport)
+    try:
+        out = cli.create_mr_note(project="grp/proj", mr_iid=9, body="LGTM overall")
+        assert out["id"] == 55
+        assert recorder["method"] == "POST"
+        assert json.loads(recorder["body"]) == dict(body="LGTM overall")
+        assert recorder["path"].endswith("/merge_requests/9/notes")
+        assert "/discussions/" not in recorder["path"]
+    finally:
+        cli.close()
+
+
 def test_create_merge_request_includes_optional_description_when_present() -> None:
     storage: dict[str, str] = dict()
 

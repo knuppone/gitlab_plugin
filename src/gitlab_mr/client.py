@@ -94,6 +94,20 @@ class GitLabMrClient:
         resp.raise_for_status()
         return cast(Mapping[str, Any], resp.json())
 
+    def create_mr_note(
+        self,
+        *,
+        project: Union[str, int],
+        mr_iid: int,
+        body: str,
+    ) -> Mapping[str, Any]:
+        """Post a top-level merge request note (not a threaded discussion reply)."""
+        encoded = self._project_segment(project)
+        path = f"/projects/{encoded}/merge_requests/{mr_iid}/notes"
+        resp = self._client.post(path, json=dict(body=body))
+        resp.raise_for_status()
+        return cast(Mapping[str, Any], resp.json())
+
     def create_merge_request(
         self,
         *,

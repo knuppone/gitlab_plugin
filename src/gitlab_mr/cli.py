@@ -25,7 +25,7 @@ def _maybe_print_version(do_print: bool) -> bool:
 app = typer.Typer(
     no_args_is_help=True,
     context_settings=dict(help_option_names=["--help", "-h"]),
-    help="GitLab merge request discussions / replies / creation.",
+    help="GitLab merge request discussions, comments, replies, and creation.",
 )
 
 
@@ -85,7 +85,12 @@ def _mr_ref(merge_indicator: str, project_cli: Optional[str]) -> MrReference:
     return parse_merge_request_identifier(merge_indicator, project_segment if project_segment else None)
 
 
-def _reply_markdown(body: Optional[str], body_file: Optional[pathlib.Path]) -> str:
+def _markdown_body(
+    body: Optional[str],
+    body_file: Optional[pathlib.Path],
+    *,
+    command_label: str,
+) -> str:
     if body_file is not None and body is not None:
         typer.echo("Use either --body or --body-file, not both.", err=True)
         raise typer.Exit(code=1)
@@ -106,9 +111,67 @@ def _reply_markdown(body: Optional[str], body_file: Optional[pathlib.Path]) -> s
         markdown_payload = body.strip("\n")
 
     if markdown_payload.strip() == "":
-        typer.echo("reply needs non-empty markdown (--body, --body-file, or stdin).", err=True)
+        typer.echo(
+            f"{command_label} needs non-empty markdown (--body, --body-file, or stdin).",
+            err=True,
+        )
         raise typer.Exit(code=1)
     return markdown_payload
+
+
+def _post_mr_markdown_run(
+    *,
+    merge_indicator: str,
+    project_cli: Optional[str],
+    gitlab_url: Optional[str],
+    token_cli: Optional[str],
+    timeout: float,
+    verbose: bool,
+    compact_json: bool,
+    dry_run: bool,
+    operation: str,
+    markdown: str,
+    discussion_id: Optional[str] = None,
+) -> None:
+    ref = _mr_ref(merge_indicator, project_cli)
+    base = _gitlab_base(gitlab_url)
+    if dry_run:
+        payload: dict[str, Any] = dict(
+            operation=operation,
+            base_url=base,
+            project=str(ref.project),
+            merge_request_iid=ref.iid,
+            markdown_chars=len(markdown),
+            token_present=len(_token(token_cli)) > 0,
+        )
+        if discussion_id is not None:
+            payload["discussion_id"] = discussion_id
+        _emit(payload, compact_json=compact_json)
+        return
+    secret = _require_live_token(_token(token_cli))
+    try:
+        with GitLabMrClient(base_url=base, token=secret, timeout_seconds=float(timeout)) as client:
+            if discussion_id is not None:
+                created = dict(
+                    client.reply_to_discussion(
+                        project=ref.project,
+                        mr_iid=ref.iid,
+                        discussion_id=discussion_id,
+                        body=markdown,
+                    )
+                )
+            else:
+                created = dict(
+                    client.create_mr_note(
+                        project=ref.project,
+                        mr_iid=ref.iid,
+                        body=markdown,
+                    )
+                )
+        _emit(created, compact_json=compact_json)
+    except BaseException as err:
+        _http_error(err, verbose)
+        raise typer.Exit(code=1) from err
 
 
 def _description_text(literal: Optional[str], file_path: Optional[pathlib.Path]) -> Tuple[str, str]:
@@ -233,6 +296,71 @@ def review_comments_cmd(
     )
 
 
+@app.command("comment")
+def comment_cmd(
+    merge_indicator: str = typer.Argument(..., metavar="MR", help="MR URL or IID (IID needs --project)."),
+    project: Optional[str] = typer.Option(None, "--project", "-p"),
+    body: Optional[str] = typer.Option(
+        None,
+        "--body",
+        "-b",
+        help="Top-level MR comment markdown (`-` or omit to read stdin).",
+    ),
+    body_file: Optional[pathlib.Path] = typer.Option(None, "--body-file", exists=True),
+    gitlab_url: Optional[str] = typer.Option(None, "--gitlab-url", envvar="GITLAB_URL", show_envvar=False),
+    token_cli: Optional[str] = typer.Option(None, "--token", envvar="GITLAB_TOKEN", show_envvar=False),
+    timeout: float = typer.Option(30.0, "--timeout"),
+    verbose: bool = typer.Option(False, "--verbose"),
+    compact_json: bool = typer.Option(False, "--compact"),
+    dry_run: bool = typer.Option(False, "--dry-run"),
+) -> None:
+    """Add a top-level merge request comment (GitLab MR note, not a threaded reply)."""
+
+    markdown = _markdown_body(body, body_file, command_label="comment")
+    _post_mr_markdown_run(
+        merge_indicator=merge_indicator,
+        project_cli=project,
+        gitlab_url=gitlab_url,
+        token_cli=token_cli,
+        timeout=timeout,
+        verbose=verbose,
+        compact_json=compact_json,
+        dry_run=dry_run,
+        operation="create_mr_note",
+        markdown=markdown,
+    )
+
+
+@app.command("note")
+def note_cmd(
+    merge_indicator: str = typer.Argument(..., metavar="MR"),
+    project: Optional[str] = typer.Option(None, "--project", "-p"),
+    body: Optional[str] = typer.Option(None, "--body", "-b"),
+    body_file: Optional[pathlib.Path] = typer.Option(None, "--body-file", exists=True),
+    gitlab_url: Optional[str] = typer.Option(None, "--gitlab-url", envvar="GITLAB_URL", show_envvar=False),
+    token_cli: Optional[str] = typer.Option(None, "--token", envvar="GITLAB_TOKEN", show_envvar=False),
+    timeout: float = typer.Option(30.0, "--timeout"),
+    verbose: bool = typer.Option(False, "--verbose"),
+    compact_json: bool = typer.Option(False, "--compact"),
+    dry_run: bool = typer.Option(False, "--dry-run"),
+) -> None:
+    """Alias of `comment` (GitLab calls these merge request notes)."""
+
+    markdown = _markdown_body(body, body_file, command_label="note")
+    _post_mr_markdown_run(
+        merge_indicator=merge_indicator,
+        project_cli=project,
+        gitlab_url=gitlab_url,
+        token_cli=token_cli,
+        timeout=timeout,
+        verbose=verbose,
+        compact_json=compact_json,
+        dry_run=dry_run,
+        operation="create_mr_note",
+        markdown=markdown,
+    )
+
+
 @app.command("reply")
 def reply_cmd(
     merge_indicator: str = typer.Argument(..., metavar="MR"),
@@ -247,39 +375,22 @@ def reply_cmd(
     compact_json: bool = typer.Option(False, "--compact"),
     dry_run: bool = typer.Option(False, "--dry-run"),
 ) -> None:
-    """Post a threaded reply onto an MR discussion."""
+    """Post a threaded reply onto an existing MR discussion."""
 
-    ref = _mr_ref(merge_indicator, project)
-    base = _gitlab_base(gitlab_url)
-    markdown = _reply_markdown(body, body_file)
-    trimmed_id = discussion_id.strip()
-    if dry_run:
-        _emit(
-            dict(
-                operation="reply_note",
-                base_url=base,
-                project=str(ref.project),
-                merge_request_iid=ref.iid,
-                discussion_id=trimmed_id,
-                markdown_chars=len(markdown),
-                token_present=len(_token(token_cli)) > 0,
-            ),
-            compact_json=compact_json,
-        )
-        return
-    secret = _require_live_token(_token(token_cli))
-    try:
-        with GitLabMrClient(base_url=base, token=secret, timeout_seconds=float(timeout)) as client:
-            note = dict(client.reply_to_discussion(
-                project=ref.project,
-                mr_iid=ref.iid,
-                discussion_id=trimmed_id,
-                body=markdown,
-            ))
-        _emit(note, compact_json=compact_json)
-    except BaseException as err:
-        _http_error(err, verbose)
-        raise typer.Exit(code=1) from err
+    markdown = _markdown_body(body, body_file, command_label="reply")
+    _post_mr_markdown_run(
+        merge_indicator=merge_indicator,
+        project_cli=project,
+        gitlab_url=gitlab_url,
+        token_cli=token_cli,
+        timeout=timeout,
+        verbose=verbose,
+        compact_json=compact_json,
+        dry_run=dry_run,
+        operation="reply_discussion_note",
+        markdown=markdown,
+        discussion_id=discussion_id.strip(),
+    )
 
 
 @app.command("create")
