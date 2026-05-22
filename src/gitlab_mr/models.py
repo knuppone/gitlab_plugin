@@ -22,6 +22,20 @@ class DiscussionNoteNormalized(TypedDict, total=False):
     resolved: Optional[bool]
 
 
+class DiscussionNoteAgent(TypedDict, total=False):
+    author: str
+    body: Optional[str]
+    created_at: Optional[str]
+    resolved: Optional[bool]
+
+
+class DiscussionPositionSlim(TypedDict, total=False):
+    file: str
+    line: int
+    line_end: int
+    old_line: int
+
+
 class DiscussionPositionTyped(TypedDict, total=False):
     old_path: Optional[str]
     new_path: Optional[str]
@@ -33,8 +47,20 @@ class DiscussionPositionTyped(TypedDict, total=False):
     position_type: Optional[str]
 
 
+class DiscussionAgent(TypedDict, total=False):
+    discussion_id: str
+    resolved: Optional[bool]
+    position: DiscussionPositionSlim
+    notes: List[DiscussionNoteAgent]
+
+
 class DiscussionNormalized(TypedDict):
     discussion_id: str
     resolved: Optional[bool]
     position: Union[DiscussionPositionTyped, Dict[str, Any], None]
     notes: List[DiscussionNoteNormalized]
+
+
+class DiscussionsEnvelope(TypedDict):
+    source_branch: str
+    discussions: Union[List[DiscussionAgent], List[DiscussionNormalized]]

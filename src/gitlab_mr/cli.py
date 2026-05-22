@@ -3,14 +3,21 @@ from __future__ import annotations
 import json
 import os
 import pathlib
+import subprocess
 import sys
-from typing import Any, Optional, Tuple
+from typing import Any, Dict, Literal, Optional, Tuple, Union
 
 import httpx
 import typer
 
-from gitlab_mr.client import GitLabMrClient, dump_json_stdout, normalize_discussions
+from gitlab_mr.client import (
+    DiscussionsOutputFormat,
+    GitLabMrClient,
+    build_discussions_envelope,
+    dump_json_stdout,
+)
 from gitlab_mr.parsing import MrReference, normalize_project_segment, parse_merge_request_identifier
+from gitlab_mr.position import build_text_position, diff_refs_from_mr
 
 __version__: str = "0.1.0"
 
@@ -119,6 +126,166 @@ def _markdown_body(
     return markdown_payload
 
 
+def _git_rev(ref: str) -> str:
+    completed = subprocess.run(
+        ["git", "rev-parse", ref],
+        check=True,
+        capture_output=True,
+        text=True,
+    )
+    return completed.stdout.strip()
+
+
+def _shas_from_git(target_branch: str) -> Dict[str, str]:
+    target_ref = target_branch.strip()
+    if not target_ref:
+        raise ValueError("target-branch must not be empty")
+    remote_target = target_ref if target_ref.startswith("origin/") else f"origin/{target_ref}"
+    head_sha = _git_rev("HEAD")
+    start_sha = _git_rev(remote_target)
+    base_sha = subprocess.run(
+        ["git", "merge-base", remote_target, "HEAD"],
+        check=True,
+        capture_output=True,
+        text=True,
+    ).stdout.strip()
+    return dict(base_sha=base_sha, head_sha=head_sha, start_sha=start_sha)
+
+
+def _resolve_diff_shas(
+    *,
+    client: GitLabMrClient,
+    project: Union[str, int],
+    mr_iid: int,
+    resolve_mode: Literal["mr", "git"],
+    target_branch: str,
+    base_sha_cli: Optional[str],
+    head_sha_cli: Optional[str],
+    start_sha_cli: Optional[str],
+) -> Dict[str, str]:
+    explicit = [base_sha_cli, head_sha_cli, start_sha_cli]
+    if any(explicit) and not all(explicit):
+        typer.echo("Pass all of --base-sha, --head-sha, and --start-sha, or none.", err=True)
+        raise typer.Exit(code=1)
+    if all(explicit):
+        return dict(
+            base_sha=base_sha_cli.strip(),  # type: ignore[union-attr]
+            head_sha=head_sha_cli.strip(),  # type: ignore[union-attr]
+            start_sha=start_sha_cli.strip(),  # type: ignore[union-attr]
+        )
+    if resolve_mode == "git":
+        try:
+            return _shas_from_git(target_branch)
+        except (subprocess.CalledProcessError, ValueError) as err:
+            typer.echo(f"Could not resolve SHAs from git: {err}", err=True)
+            raise typer.Exit(code=1) from err
+    mr_payload = client.get_merge_request(project=project, mr_iid=mr_iid)
+    try:
+        return diff_refs_from_mr(mr_payload)
+    except ValueError as err:
+        typer.echo(str(err), err=True)
+        raise typer.Exit(code=1) from err
+
+
+def _inline_comment_run(
+    *,
+    merge_indicator: str,
+    project_cli: Optional[str],
+    file_path: str,
+    line: int,
+    line_end: Optional[int],
+    old_line: Optional[int],
+    old_line_end: Optional[int],
+    line_type: str,
+    resolve_shas: Literal["mr", "git"],
+    target_branch: str,
+    base_sha_cli: Optional[str],
+    head_sha_cli: Optional[str],
+    start_sha_cli: Optional[str],
+    gitlab_url: Optional[str],
+    token_cli: Optional[str],
+    timeout: float,
+    verbose: bool,
+    compact_json: bool,
+    dry_run: bool,
+    markdown: str,
+) -> None:
+    ref = _mr_ref(merge_indicator, project_cli)
+    base = _gitlab_base(gitlab_url)
+    try:
+        position_preview = build_text_position(
+            file_path=file_path,
+            new_line=line,
+            old_line=old_line,
+            new_line_end=line_end,
+            old_line_end=old_line_end,
+            base_sha=base_sha_cli or "dry-run-base",
+            head_sha=head_sha_cli or "dry-run-head",
+            start_sha=start_sha_cli or "dry-run-start",
+            line_type=line_type,
+        )
+    except ValueError as err:
+        typer.echo(str(err), err=True)
+        raise typer.Exit(code=1) from err
+
+    if dry_run:
+        _emit(
+            dict(
+                operation="create_mr_discussion",
+                base_url=base,
+                project=str(ref.project),
+                merge_request_iid=ref.iid,
+                file=file_path,
+                line=line,
+                line_end=line_end,
+                resolve_shas=resolve_shas,
+                target_branch=target_branch,
+                position=position_preview,
+                markdown_chars=len(markdown),
+                token_present=len(_token(token_cli)) > 0,
+            ),
+            compact_json=compact_json,
+        )
+        return
+
+    secret = _require_live_token(_token(token_cli))
+    try:
+        with GitLabMrClient(base_url=base, token=secret, timeout_seconds=float(timeout)) as client:
+            shas = _resolve_diff_shas(
+                client=client,
+                project=ref.project,
+                mr_iid=ref.iid,
+                resolve_mode=resolve_shas,
+                target_branch=target_branch,
+                base_sha_cli=base_sha_cli,
+                head_sha_cli=head_sha_cli,
+                start_sha_cli=start_sha_cli,
+            )
+            position = build_text_position(
+                file_path=file_path,
+                new_line=line,
+                old_line=old_line,
+                new_line_end=line_end,
+                old_line_end=old_line_end,
+                base_sha=shas["base_sha"],
+                head_sha=shas["head_sha"],
+                start_sha=shas["start_sha"],
+                line_type=line_type,
+            )
+            created = dict(
+                client.create_mr_discussion(
+                    project=ref.project,
+                    mr_iid=ref.iid,
+                    body=markdown,
+                    position=position,
+                )
+            )
+        _emit(created, compact_json=compact_json)
+    except BaseException as err:
+        _http_error(err, verbose)
+        raise typer.Exit(code=1) from err
+
+
 def _post_mr_markdown_run(
     *,
     merge_indicator: str,
@@ -206,6 +373,7 @@ def _discussions_run(
     per_page: int,
     max_pages: Optional[int],
     dry_run: bool,
+    output_format: DiscussionsOutputFormat,
 ) -> None:
     ref = _mr_ref(merge_indicator, project_cli)
     base = _gitlab_base(gitlab_url)
@@ -218,6 +386,8 @@ def _discussions_run(
                 merge_request_iid=ref.iid,
                 per_page=per_page,
                 max_pages=max_pages,
+                output_format=output_format,
+                source_branch=None,
                 token_present=len(_token(token_cli)) > 0,
             ),
             compact_json=compact_json,
@@ -226,13 +396,19 @@ def _discussions_run(
     secret = _require_live_token(_token(token_cli))
     try:
         with GitLabMrClient(base_url=base, token=secret, timeout_seconds=float(timeout)) as client:
+            mr_payload = client.get_merge_request(project=ref.project, mr_iid=ref.iid)
             raw = client.list_mr_discussions_paginated(
                 project=ref.project,
                 mr_iid=ref.iid,
                 per_page=max(1, int(per_page)),
                 max_pages=max_pages,
             )
-        _emit(normalize_discussions(raw), compact_json=compact_json)
+            envelope = build_discussions_envelope(
+                mr_payload,
+                raw,
+                output_format=output_format,
+            )
+        _emit(envelope, compact_json=compact_json)
     except BaseException as err:
         _http_error(err, verbose)
         raise typer.Exit(code=1) from err
@@ -250,6 +426,12 @@ def discussions_cmd(
     per_page: int = typer.Option(20, "--per-page", min=1, max=100),
     max_pages: Optional[int] = typer.Option(None, "--max-pages", min=1),
     dry_run: bool = typer.Option(False, "--dry-run"),
+    output_format: DiscussionsOutputFormat = typer.Option(
+        "agent",
+        "--format",
+        "-f",
+        help="agent: slim JSON for review automation; full: verbose GitLab-shaped output.",
+    ),
 ) -> None:
     """List normalized MR discussion threads (review comments)."""
 
@@ -264,6 +446,7 @@ def discussions_cmd(
         per_page,
         max_pages,
         dry_run,
+        output_format,
     )
 
 
@@ -279,6 +462,12 @@ def review_comments_cmd(
     per_page: int = typer.Option(20, "--per-page", min=1, max=100),
     max_pages: Optional[int] = typer.Option(None, "--max-pages", min=1),
     dry_run: bool = typer.Option(False, "--dry-run"),
+    output_format: DiscussionsOutputFormat = typer.Option(
+        "agent",
+        "--format",
+        "-f",
+        help="agent: slim JSON; full: verbose output.",
+    ),
 ) -> None:
     """Alias of `discussions` (GitHub-ish wording)."""
 
@@ -293,6 +482,7 @@ def review_comments_cmd(
         per_page,
         max_pages,
         dry_run,
+        output_format,
     )
 
 
@@ -390,6 +580,162 @@ def reply_cmd(
         operation="reply_discussion_note",
         markdown=markdown,
         discussion_id=discussion_id.strip(),
+    )
+
+
+@app.command("inline")
+def inline_cmd(
+    merge_indicator: str = typer.Argument(..., metavar="MR", help="MR URL or IID (IID needs --project)."),
+    project: Optional[str] = typer.Option(None, "--project", "-p"),
+    file: str = typer.Option(..., "--file", "-f", help="Path in the repo (same for old_path and new_path)."),
+    line: int = typer.Option(..., "--line", "-n", min=1, help="Line on the post-change file (new_line)."),
+    line_end: Optional[int] = typer.Option(None, "--line-end", min=1, help="End line for a multi-line comment."),
+    old_line: Optional[int] = typer.Option(None, "--old-line", min=1, help="Pre-change line (removed/unchanged)."),
+    old_line_end: Optional[int] = typer.Option(None, "--old-line-end", min=1),
+    line_type: str = typer.Option(
+        "new",
+        "--line-type",
+        help="GitLab line_range type: new (added) or old (removed/unchanged context).",
+    ),
+    resolve_shas: Literal["mr", "git"] = typer.Option(
+        "mr",
+        "--resolve-shas",
+        help="mr: GET MR diff_refs; git: local HEAD / origin/target / merge-base.",
+    ),
+    target_branch: str = typer.Option("main", "--target-branch", help="Target branch for --resolve-shas git."),
+    base_sha: Optional[str] = typer.Option(None, "--base-sha"),
+    head_sha: Optional[str] = typer.Option(None, "--head-sha"),
+    start_sha: Optional[str] = typer.Option(None, "--start-sha"),
+    body: Optional[str] = typer.Option(None, "--body", "-b"),
+    body_file: Optional[pathlib.Path] = typer.Option(None, "--body-file", exists=True),
+    gitlab_url: Optional[str] = typer.Option(None, "--gitlab-url", envvar="GITLAB_URL", show_envvar=False),
+    token_cli: Optional[str] = typer.Option(None, "--token", envvar="GITLAB_TOKEN", show_envvar=False),
+    timeout: float = typer.Option(30.0, "--timeout"),
+    verbose: bool = typer.Option(False, "--verbose"),
+    compact_json: bool = typer.Option(False, "--compact"),
+    dry_run: bool = typer.Option(False, "--dry-run"),
+) -> None:
+    """Start a new inline MR thread on a file/line (first comment in the thread)."""
+
+    if line_type not in ("new", "old"):
+        typer.echo("--line-type must be new or old.", err=True)
+        raise typer.Exit(code=1)
+    markdown = _markdown_body(body, body_file, command_label="inline")
+    _inline_comment_run(
+        merge_indicator=merge_indicator,
+        project_cli=project,
+        file_path=file,
+        line=line,
+        line_end=line_end,
+        old_line=old_line,
+        old_line_end=old_line_end,
+        line_type=line_type,
+        resolve_shas=resolve_shas,
+        target_branch=target_branch,
+        base_sha_cli=base_sha,
+        head_sha_cli=head_sha,
+        start_sha_cli=start_sha,
+        gitlab_url=gitlab_url,
+        token_cli=token_cli,
+        timeout=timeout,
+        verbose=verbose,
+        compact_json=compact_json,
+        dry_run=dry_run,
+        markdown=markdown,
+    )
+
+
+def _approve_run(
+    merge_indicator: str,
+    project_cli: Optional[str],
+    gitlab_url: Optional[str],
+    token_cli: Optional[str],
+    timeout: float,
+    verbose: bool,
+    compact_json: bool,
+    dry_run: bool,
+    sha_mode: Optional[str],
+    approval_password: Optional[str],
+) -> None:
+    ref = _mr_ref(merge_indicator, project_cli)
+    base = _gitlab_base(gitlab_url)
+    sha_literal: Optional[str] = None
+    if sha_mode is not None and sha_mode.strip():
+        trimmed = sha_mode.strip()
+        if trimmed != "mr":
+            sha_literal = trimmed
+    if dry_run:
+        _emit(
+            dict(
+                operation="approve_merge_request",
+                base_url=base,
+                project=str(ref.project),
+                merge_request_iid=ref.iid,
+                sha_mode=sha_mode.strip() if sha_mode and sha_mode.strip() else None,
+                token_present=len(_token(token_cli)) > 0,
+            ),
+            compact_json=compact_json,
+        )
+        return
+    secret = _require_live_token(_token(token_cli))
+    try:
+        with GitLabMrClient(base_url=base, token=secret, timeout_seconds=float(timeout)) as client:
+            resolved_sha = sha_literal
+            if sha_mode is not None and sha_mode.strip() == "mr":
+                mr_payload = client.get_merge_request(project=ref.project, mr_iid=ref.iid)
+                head_sha = mr_payload.get("sha")
+                if head_sha is None or str(head_sha).strip() == "":
+                    typer.echo("merge request missing sha (cannot use --sha mr).", err=True)
+                    raise typer.Exit(code=1)
+                resolved_sha = str(head_sha).strip()
+            approved = dict(
+                client.approve_merge_request(
+                    project=ref.project,
+                    mr_iid=ref.iid,
+                    sha=resolved_sha,
+                    approval_password=approval_password,
+                )
+            )
+        _emit(approved, compact_json=compact_json)
+    except BaseException as err:
+        _http_error(err, verbose)
+        raise typer.Exit(code=1) from err
+
+
+@app.command("approve")
+def approve_cmd(
+    merge_indicator: str = typer.Argument(..., metavar="MR", help="MR URL or IID (IID needs --project)."),
+    project: Optional[str] = typer.Option(None, "--project", "-p"),
+    sha: Optional[str] = typer.Option(
+        None,
+        "--sha",
+        help="HEAD commit SHA to approve, or 'mr' to fetch from the merge request.",
+    ),
+    approval_password: Optional[str] = typer.Option(
+        None,
+        "--approval-password",
+        help="Required when the project enforces re-authentication to approve.",
+    ),
+    gitlab_url: Optional[str] = typer.Option(None, "--gitlab-url", envvar="GITLAB_URL", show_envvar=False),
+    token_cli: Optional[str] = typer.Option(None, "--token", envvar="GITLAB_TOKEN", show_envvar=False),
+    timeout: float = typer.Option(30.0, "--timeout"),
+    verbose: bool = typer.Option(False, "--verbose", "-v"),
+    compact_json: bool = typer.Option(False, "--compact"),
+    dry_run: bool = typer.Option(False, "--dry-run"),
+) -> None:
+    """Approve a merge request as the authenticated user (does not merge)."""
+
+    _approve_run(
+        merge_indicator,
+        project,
+        gitlab_url,
+        token_cli,
+        timeout,
+        verbose,
+        compact_json,
+        dry_run,
+        sha,
+        approval_password,
     )
 
 
