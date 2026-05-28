@@ -1,7 +1,7 @@
 ---
 name: gitlab-mr-cli-shell
 description: >-
-  gitlab-mr for MR threads/notes; review code on local checkout of source_branch. Triggers: gitlab-mr, MR URL, MR review.
+  gitlab-mr for MR threads/notes and opening PRs; review code on local checkout of source_branch. Triggers: gitlab-mr, MR URL, MR review, create PR.
 ---
 
 # gitlab-mr CLI
@@ -21,9 +21,14 @@ Run **`gitlab-mr --help`** or **`gitlab-mr <command> --help`** for further info.
 | `comment` | `note` | `POST` top-level MR note |
 | `reply` | — | `POST` in thread (`--discussion-id`) |
 | `approve` | — | `POST` approve as current user (not merge); needs **`api`** |
-| `create` | — | `POST` new MR |
+| `create` | `pr` | `POST` new MR (pull request) |
 
-MR id: full URL `…/merge_requests/12` or IID + `--project ns/repo`. Body: `--body`, `--body-file`, or stdin (`comment`/`note`/`reply`/`inline`). `create`: `--description` / file / stdin.
+MR id: full URL `…/merge_requests/12` or IID + `--project ns/repo`. Body: `--body`, `--body-file`, or stdin (`comment`/`note`/`reply`/`inline`). `create`/`pr`: `--description` / file / stdin; branches must exist on remote.
+
+```bash
+gitlab-mr pr --project acme/widget --source-branch feat/x --target-branch main \
+  --title "Add x" -d "What changed and how to test."
+```
 
 ## Review workflow
 

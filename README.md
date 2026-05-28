@@ -91,13 +91,16 @@ gitlab-mr approve "https://gitlab.com/acme/widget/-/merge_requests/12"
 gitlab-mr approve 12 --project acme/widget --sha mr --compact
 ```
 
-### Create a merge request
+### Create a merge request (`create` / `pr`)
 
-Requires branches that already exist on the remote (`source_branch` / `target_branch`). Supply description via **`--description`**, **`--description-file`**, or **piped stdin** (TTY stdin alone errors).
+Requires branches that already exist on the remote (`source_branch` / `target_branch`). Supply description via **`--description`**, **`--description-file`**, or **piped stdin** (TTY stdin alone errors). **`pr`** is an alias of **`create`** (GitLab MR = pull request).
 
 ```bash
 cat descr.md | gitlab-mr create --project acme/widget \
   --source-branch feat/foo --target-branch main --title "Add foo"
+
+gitlab-mr pr --project acme/widget --source-branch feat/foo --target-branch main \
+  --title "Add foo" --description "Summary for reviewers."
 ```
 
 ## Recommended follow-up CLI features

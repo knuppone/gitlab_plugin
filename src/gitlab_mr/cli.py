@@ -32,7 +32,7 @@ def _maybe_print_version(do_print: bool) -> bool:
 app = typer.Typer(
     no_args_is_help=True,
     context_settings=dict(help_option_names=["--help", "-h"]),
-    help="GitLab merge request discussions, comments, replies, and creation.",
+    help="GitLab merge request discussions, comments, replies, and MR/PR creation.",
 )
 
 
@@ -739,23 +739,20 @@ def approve_cmd(
     )
 
 
-@app.command("create")
-def create_cmd(
-    project: str = typer.Option(..., "--project", "-p"),
-    source_branch: str = typer.Option(..., "--source-branch"),
-    target_branch: str = typer.Option(..., "--target-branch"),
-    title: str = typer.Option(..., "--title"),
-    description: Optional[str] = typer.Option(None, "--description", "-d"),
-    description_file: Optional[pathlib.Path] = typer.Option(None, "--description-file", exists=True),
-    gitlab_url: Optional[str] = typer.Option(None, "--gitlab-url", envvar="GITLAB_URL", show_envvar=False),
-    token_cli: Optional[str] = typer.Option(None, "--token", envvar="GITLAB_TOKEN", show_envvar=False),
-    timeout: float = typer.Option(30.0, "--timeout"),
-    verbose: bool = typer.Option(False, "--verbose"),
-    compact_json: bool = typer.Option(False, "--compact"),
-    dry_run: bool = typer.Option(False, "--dry-run"),
+def _create_run(
+    project: str,
+    source_branch: str,
+    target_branch: str,
+    title: str,
+    description: Optional[str],
+    description_file: Optional[pathlib.Path],
+    gitlab_url: Optional[str],
+    token_cli: Optional[str],
+    timeout: float,
+    verbose: bool,
+    compact_json: bool,
+    dry_run: bool,
 ) -> None:
-    """Open a merge request."""
-
     slug = normalize_project_segment(project.strip())
     text, provenance = _description_text(description, description_file)
     base = _gitlab_base(gitlab_url)
@@ -791,6 +788,72 @@ def create_cmd(
     except BaseException as err:
         _http_error(err, verbose)
         raise typer.Exit(code=1) from err
+
+
+@app.command("create")
+def create_cmd(
+    project: str = typer.Option(..., "--project", "-p"),
+    source_branch: str = typer.Option(..., "--source-branch"),
+    target_branch: str = typer.Option(..., "--target-branch"),
+    title: str = typer.Option(..., "--title"),
+    description: Optional[str] = typer.Option(None, "--description", "-d"),
+    description_file: Optional[pathlib.Path] = typer.Option(None, "--description-file", exists=True),
+    gitlab_url: Optional[str] = typer.Option(None, "--gitlab-url", envvar="GITLAB_URL", show_envvar=False),
+    token_cli: Optional[str] = typer.Option(None, "--token", envvar="GITLAB_TOKEN", show_envvar=False),
+    timeout: float = typer.Option(30.0, "--timeout"),
+    verbose: bool = typer.Option(False, "--verbose"),
+    compact_json: bool = typer.Option(False, "--compact"),
+    dry_run: bool = typer.Option(False, "--dry-run"),
+) -> None:
+    """Open a merge request (GitLab MR; same as `pr`)."""
+
+    _create_run(
+        project,
+        source_branch,
+        target_branch,
+        title,
+        description,
+        description_file,
+        gitlab_url,
+        token_cli,
+        timeout,
+        verbose,
+        compact_json,
+        dry_run,
+    )
+
+
+@app.command("pr")
+def pr_cmd(
+    project: str = typer.Option(..., "--project", "-p"),
+    source_branch: str = typer.Option(..., "--source-branch"),
+    target_branch: str = typer.Option(..., "--target-branch"),
+    title: str = typer.Option(..., "--title"),
+    description: Optional[str] = typer.Option(None, "--description", "-d"),
+    description_file: Optional[pathlib.Path] = typer.Option(None, "--description-file", exists=True),
+    gitlab_url: Optional[str] = typer.Option(None, "--gitlab-url", envvar="GITLAB_URL", show_envvar=False),
+    token_cli: Optional[str] = typer.Option(None, "--token", envvar="GITLAB_TOKEN", show_envvar=False),
+    timeout: float = typer.Option(30.0, "--timeout"),
+    verbose: bool = typer.Option(False, "--verbose"),
+    compact_json: bool = typer.Option(False, "--compact"),
+    dry_run: bool = typer.Option(False, "--dry-run"),
+) -> None:
+    """Alias of `create` (open a GitLab merge request / pull request)."""
+
+    _create_run(
+        project,
+        source_branch,
+        target_branch,
+        title,
+        description,
+        description_file,
+        gitlab_url,
+        token_cli,
+        timeout,
+        verbose,
+        compact_json,
+        dry_run,
+    )
 
 
 def main() -> None:
