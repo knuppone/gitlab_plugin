@@ -25,8 +25,13 @@ Run **`gitlab-mr --help`** or **`gitlab-mr <command> --help`** for further info.
 
 MR id: full URL `…/merge_requests/12` or IID + `--project ns/repo`. Body: `--body`, `--body-file`, or stdin (`comment`/`note`/`reply`/`inline`). `create`/`pr`: `--description` / file / stdin; branches must exist on remote.
 
+**`create` / `pr` branches:** `--source-branch` = current feature branch; `--target-branch` = branch it was **originally forked from** (e.g. `feature/US-123456` → `dev` when created from `dev`). Do not default to `main` unless that was the parent. Confirm via creation command or `git reflog | grep "moving from"`.
+
 ```bash
-gitlab-mr pr --project acme/widget --source-branch feat/x --target-branch main \
+SOURCE="$(git branch --show-current)"
+TARGET=dev   # parent at branch creation
+
+gitlab-mr pr --project acme/widget --source-branch "$SOURCE" --target-branch "$TARGET" \
   --title "Add x" -d "What changed and how to test."
 ```
 
